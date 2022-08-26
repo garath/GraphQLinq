@@ -1,4 +1,5 @@
-﻿using System;
+﻿using Spectre.Console;
+using System;
 using System.CommandLine;
 using System.CommandLine.Invocation;
 using System.IO;
@@ -6,7 +7,6 @@ using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Threading.Tasks;
-using Spectre.Console;
 
 namespace GraphQLinq.Scaffolding
 {
@@ -116,14 +116,15 @@ namespace GraphQLinq.Scaffolding
                 new Option<string>(new []{ "--output", "-o" }, () => "", "Output folder"),
                 new Option<string>(new []{ "--namespace", "-n" }, () => "","Namespace of generated classes"),
                 new Option<string>(new []{ "--context", "-c" }, () => "Query","Name of the generated context classes"),
+                new Option<string>(new []{ "--token", "-t" }, "Optional bearer token to use for authentication")
             };
 
-            generate.Handler = CommandHandler.Create<Uri, string, string, string, IConsole>(HandleGenerate);
+            generate.Handler = CommandHandler.Create<Uri, string, string, string, string?, IConsole>(HandleGenerate);
 
             await generate.InvokeAsync(args);
         }
 
-        private static async Task HandleGenerate(Uri endpoint, string output, string @namespace, string context, IConsole console)
+        private static async Task HandleGenerate(Uri endpoint, string output, string @namespace, string context, string? token, IConsole console)
         {
             //var webClient = new WebClient();
             //webClient.Headers.Add("Content-Type", "application/json");
@@ -139,11 +140,25 @@ namespace GraphQLinq.Scaffolding
             {
                 AnsiConsole.WriteLine("Running introspection query ...");
                 using var httpClient = new HttpClient();
+                httpClient.DefaultRequestHeaders.UserAgent.Add(new(
+                    productName: typeof(Program).Assembly.GetName().Name ?? "GraphQLinq.Scaffolding",
+                    productVersion: typeof(Program).Assembly.GetName().Version?.ToString()));
+
+                if (!string.IsNullOrEmpty(token))
+                {
+                    httpClient.DefaultRequestHeaders.Authorization = new("bearer", token);
+                }
+
                 using var responseMessage = await httpClient.PostAsJsonAsync(endpoint, new { query = IntrospectionQuery });
+                responseMessage.EnsureSuccessStatusCode();
 
                 AnsiConsole.WriteLine("Reading and deserializing schema information ...");
-                var schemaJson = await responseMessage.Content.ReadAsStringAsync();
-                return JsonSerializer.Deserialize<RootSchemaObject>(schemaJson, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+                RootSchemaObject? rootSchema = await responseMessage.Content.ReadFromJsonAsync<RootSchemaObject>(new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+
+                if (rootSchema is null)
+                    throw new HttpRequestException("Response body not understood.");
+
+                return rootSchema;
             });
             AnsiConsole.WriteLine();
 
